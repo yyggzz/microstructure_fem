@@ -50,7 +50,6 @@ double dxx, dyy, dzz, dxy, dxz, dyz; //to get the strain in one pixel
 std::vector < std::pair<int, double> > csh_mod;// matrix to save modulus of csh at each time step
 
 //////////////////////////////////////////////////
-//double cmod[1000001][7][7][51], dk[1000001][9][4][9][4][51]; //modulus matrix
 double**** cmod;
 double****** dk;
 
@@ -70,7 +69,7 @@ double**** new_4d(int a, int b, int c, int d) {
 
 void delete_4d(double**** p, int a, int b, int c, int d) {   
     for (int j = 0; j < b; j++){        
-        for (int k = 0; k < d; k++) {
+        for (int k = 0; k < c; k++) {
             delete p[j][k];
         }
     }
@@ -2226,6 +2225,7 @@ double Fmodulus(double t)
 int main() {
 
 	construct();
+	destruct();
 	return 0;
 	
 }
