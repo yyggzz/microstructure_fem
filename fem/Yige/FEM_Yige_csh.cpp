@@ -30,9 +30,8 @@ std::ofstream fout("outputfile.txt"); // store the bulk stress due to applied st
 //global variables: 100x100x100 voxels, assume 50 input files, 3 directions
 double u[1000001][51][4], gb[1000001][4], b[1000001][4]; //node displacement, gradient, b value
 double h[1000001][4], Ah[1000001][4]; // for solving the gb+b=0
-double cmod[1000001][7][7][51], dk[1000001][9][4][9][4][51]; //modulus matrix
-
-// double * cmod_p[1000] = new double[1000][11000];
+//double cmod[1000001][7][7][51];
+//double dk[1000001][9][4][9][4][51]; //modulus matrix
 
 long ib[1000001][28]; //for global node, 1000000 nodes, each node has 27 neighbors (including self)
 short pix[1000001], pixstor[1000001], pixt[1000001]; //phase parameters and aging time
@@ -50,6 +49,93 @@ double dxx, dyy, dzz, dxy, dxz, dyz; //to get the strain in one pixel
 //YZ: added 200511
 std::vector < std::pair<int, double> > csh_mod;// matrix to save modulus of csh at each time step
 
+//////////////////////////////////////////////////
+//double cmod[1000001][7][7][51], dk[1000001][9][4][9][4][51]; //modulus matrix
+double**** cmod;
+double****** dk;
+
+double**** new_4d(int a, int b, int c, int d) {
+  double**** p = new double ***[a];
+  for (int i = 0; i < a ;i++) {
+    p[i] = new double**[b];
+    for (int j = 0; j < b; j++){
+        p[i][j] = new double*[c];
+        for (int k = 0; k < c; k++) {
+            p[i][j][k] = new double[d];
+        }
+    }
+  }
+  return p;  
+}
+
+void delete_4d(double**** p, int a, int b, int c, int d) {   
+    for (int j = 0; j < b; j++){        
+        for (int k = 0; k < d; k++) {
+            delete p[j][k];
+        }
+    }
+	delete p;  
+}
+
+double****** new_6d(int a, int b, int c, int d, int e, int f) {
+  double****** p = new double *****[a];
+  for (int i = 0; i < a ;i++) {
+    p[i] = new double****[b];
+    for (int j = 0; j < b; j++){
+        p[i][j] = new double***[c];
+        for (int k = 0; k < c; k++) {
+            p[i][j][k] = new double**[d];
+			for (int l = 0; l < d; l++) {
+				p[i][j][k][l] = new double*[e];
+				for (int m = 0; m < e; m++) {
+					p[i][j][k][l][m] = new double[f];
+				}
+			}
+        }
+    }
+  }
+  return p;  
+}
+
+void delete_6d(double****** p, int a, int b, int c, int d, int e, int f) {   
+    for (int j = 0; j < b; j++){
+        for (int k = 0; k < c; k++) {
+			for (int l = 0; l < d; l++) {
+				for (int m = 0; m < e; m++) {
+					delete p[j][k][l][m];
+				}
+			}
+        }
+    }
+	delete p;  
+}
+
+double** new_2d(int a, int b) {
+   double** p = new double*[a];
+   for (int i=  0; i < a; i++) {
+	   p[i] = new double[b]; 
+   }
+   return p;
+}
+
+void delete_2d(double**p, int a, int b){
+    for (int i = 0; i < b; i++){
+        delete p[i];
+    }
+    delete p;   
+}
+
+void construct() {
+   cmod = new_4d(1000001, 7, 7, 51);
+   dk = new_6d(1000001, 9, 4, 9, 4, 51);
+}
+
+void destruct() {
+  delete_4d(cmod, 1000001,7,7,51);
+  delete_6d(dk, 1000001, 9, 4, 9, 4, 51);
+}
+
+//////////////////////////////////////////////////
 
 //YZ: added 200511
 double csh_modulus(double str11, double str22,double str33,double str13,double str23,double str12) {
@@ -1469,7 +1555,7 @@ void energy(int nx, int ny, int nz, int ns, double& utot, int q)
 
 
 //Subroutine that use conjugate gradient relaxation method to minimize energy
-void dembx(int ns, int &Lstep, double &gg, double(&dk)[1000001][9][4][9][4][51], double &gtest, int &ldemb, int &kkk, int q)
+void dembx(int ns, int &Lstep, double &gg, double****** dk, double &gtest, int &ldemb, int &kkk, int q)
 {
 	std::cout << "      Call dembx() to use conjugate gradient relaxation..." << std::endl;
 	/*
@@ -2137,554 +2223,564 @@ double Fmodulus(double t)
 }
 
 
+int main() {
 
-int main()
-{
-	
-	///////////////////////////////////////////////////////////////////////////////
-	/*
-	** BACKGROUND:
-	**
-	** This program solves the linear elastic equations in a
-	** random linear aging viscoelastic material, subject to an applied macroscopic strain,
-	** using the finite element method. Each pixel in the 3-D digital
-	** image is a cubic tri-linear finite element, having its own
-	** moduli tensor. Periodic boundary conditions are maintained.
-	** In the comments below, (USER) means that this is a section of code that
-	** the user might have to change for his particular problem. Therefore the
-	** user is encouraged to search for this string.
-	*/
-
-	/*
-	** PROBLEM AND VARIABLE DEFINITION:
-	**
-	** The problem being solved is the minimization of the energy
-	** 1/2 uAu + b u + C, where A is the Hessian matrix composed of the
-	** stiffness matrices (dk) for each pixel/element, b is a constant vector
-	** and C is a constant that are determined by the applied strain and
-	** the periodic boundary conditions, and u is a vector of all the displacements.
-	**
-	** The solution method used is the conjugate gradient relaxation algorithm.
-	**
-	** Other variables are: 
-	** gb is the gradient = Au+b, 
-	** h and Ah are auxiliary variables used in the conjugate gradient algorithm (in dembx),
-	** dk(n,i,j) is the stiffness matrix of the n'th phase, 
-	** cmod(n,i,j) is the elastic moduli tensor of the n'th phase,
-	** pix is a vector that gives the phase label of each pixel,
-	** ib is a matrix that gives the labels of the 27 (counting itself) neighbors of a given node,
-	** prob is the volume fractions of the various phases,
-	** strxx, stryy, strzz, strxz, stryz, strxy are the six Voigt volume averaged total stresses,
-	** sxx, syy, szz, sxz, syz, and sxy are the six Voigt volume averaged total strains.
-	*/
-
-	/*
-	** DIMENSIONS:
-	**
-	** The vectors u,gb,b,h, and Ah are dimensioned to be the system size,
-	** ns=nx*ny*nz, with three components, where the digital image of the
-	** microstructure considered is a rectangular paralleliped, nx * ny * nz in size.
-	** The arrays pix and ib are also dimensioned to the system size.
-	** The array ib has 27 components, for the 27 neighbors of a node.
-	** Note that the program is set up at present to have at most 100
-	** different phases. This can easily be changed, simply by changing
-	** the dimensions of dk, prob, and cmod. The parameter nphase gives the
-	** number of phases being considered in the problem.
-	** All arrays are passed between subroutines using simple common statements.
-	*/
-
-	/*
-	** STRONGLY SUGGESTED:  READ THE MANUAL BEFORE USING PROGRAM!!
-	*/
-
-	/*
-	** (USER) Change these dimensions and in other subroutines at same time.
-	** For example, search and replace all occurrences throughout the
-	** program of "(8000" by "(64000", to go from a
-	** 20 x 20 x 20 system to a 40 x 40 x 40 system.
-	*/
-	///////////////////////////////////////////////////////////////////////////////
-
-	//double phasemod[101][51][3]; //phasemod[phase][time step][bulk/shear single value]
-	double phasemod[1000001][51][3]; //phasemod[pixel][time step][bulk/shear single value]
-	double prob[101]; //prob[phase], volume fraction of each phase
-	int in[28]; //MANUAL table 3: use delta i, delta j, delta k to construct 27 neighbors of 1 element
-	int jn[28];
-	int kn[28];
-
-	int nphase = 22;//nphase value should not be zero. otherwise change it in ppixel function
-	int step = 3; //step number should be equal to number of Thames microstructure images
-		
-	//set log time: t = 0.05-56, with number of step values
-	/*
-	double tmin = 0.05;
-	double tmax = 56;
-	for (int q = 1; q <= step; q++)
-	{
-		t[q] = tmin*pow(tmax / tmin, (q*1.0 - 1.) / (step*1.0 - 1.)); //0.5*(q*1.0-1.);
-	}
-	*/
-	
-	double t[18]; //time step should be set accordingly to Thames microstructure images
-	//t[1]=0.0;
-	//t[2]=0.1834;
-	//t[3]=0.4004;
-	//t[4]=0.6571;
-	t[1]=1.1; //t[5]=0.9610;
-	t[2]=1.3206; //t[6]
-	t[3]=1.7461;
-	/*
-	t[4]=2.2497;
-	t[5]=2.8456;
-	t[6]=3.5507;
-	t[7]=4.3852;
-	t[8]=5.3726;
-	t[9]=6.5412;
-	t[10]=7.9240;
-	t[11]=9.5604;
-	t[12]=11.4968;
-	t[13]=13.7883;
-	t[14]=16.5;
-	t[15]=19.7090;
-	t[16]=23.5063;
-	t[17]=28.0;
-	*/
-
-	//read in file in string
-	string prefilename[22]; //file number should be equal to number of Thames microstructure images
-	char filename[15];
-
-	prefilename[1] = "10.img";
-	prefilename[2] = "11.img";
-	prefilename[3] = "12.img";
-	/*
-	prefilename[4] = "8.img";
-	prefilename[5] = "9.img";
-	prefilename[6] = "10.img";
-	prefilename[7] = "11.img";
-	prefilename[8] = "12.img";
-	prefilename[9] = "13.img";
-	prefilename[10] = "14.img";
-	prefilename[11] = "15.img";
-	prefilename[12] = "16.img";
-	prefilename[13] = "17.img";
-	prefilename[14] = "18.img";
-	prefilename[15] = "19.img";
-	prefilename[16] = "20.img";
-	prefilename[17] = "21.img";
-
-	prefilename[18] = "18.img";
-	prefilename[19] = "19.img";
-	prefilename[20] = "20.img";
-	prefilename[21] = "21.img";
-	
-	prefilename[22] = "22.img";
-	prefilename[23] = "23.img";
-	prefilename[24] = "24.img";
-	prefilename[25] = "25.img";
-	prefilename[26] = "26.img";
-	prefilename[27] = "27.img";
-	prefilename[28] = "28.img";
-	prefilename[29] = "29.img";
-	prefilename[30] = "30.img";
-	prefilename[31] = "31.img";
-	*/
-
-	//composite dimension
-	int nx = 100;
-	int ny = 100;
-	int nz = 100;
-	int ns = nx * ny * nz; //total number of sites
-
-	//assign phase initial aging state and aging time	
-	for (int k = 1; k <= nz; k++)
-	{
-		for (int j = 1; j <= ny; j++)
-		{
-			for (int i = 1; i <= nx; i++)
-			{
-				int m = nx * ny * (k - 1) + nx * (j - 1) + i;
-				phasechange[m] = 0; //initialize aging state, initialize before time loop
-				pixt[m] = 0; //initialize aging time
-			}
-		}
-	}
-
-	// Initialize phasemod before time loop starts
-	for (int j = 1; j <= step; j++)
-		{
-			for (int i = 1; i <= ns; i++)
-			{
-				phasemod[i][j][1] = 0.;
-				phasemod[i][j][2] = 0.;
-			}
-		}
-
-	//set controlled strain, for shear, 2 should be divided
-	/*
-	** (USER) Set applied strains
-	** Actual shear strain applied in loop is exy, exz, and eyz as given in the statements below.
-	** The engineering shear strain, by which the shear modulus is usually defined, is twice of these values.
-	*/
-	exx = 0.1; // Is it tensile strain???
-	eyy = 0.1;
-	ezz = 0.1;
-	exz = 0.0;
-	eyz = 0.0;
-	exy = 0.0;
-
-	
-	/* !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
-	/* !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! TIME LOOP Starts !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
-	/* !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
-
-	for (int q = 1; q <= step; q++)
-	{
-		std::cout << '\n';
-		std::cout << "Time step: " << q << std::endl;
-
-		//read in microstructure file starting from 1.txt
-		strcpy(filename, prefilename[q].c_str());
-		ifstream fin(filename);
-
-		/*
-		** (USER) gtest is the stopping criterion, 
-		** gb is the gradient of the energy,
-		** gg = gb * gb is the norm squared of the gradient,
-		** gtest = (small number) * ns, 
-		** so that when gg < gtest, 
-		** the RMS (root mean square) value per pixel of gb is less than sqrt(small number).
-		** i.e. gb/sqrt(ns) < (small number)
-		*/
-		double gtest = pow(10.0, -8) * ns; //modified: 10^(-12)
-
-		//assign each phase and output volume fraction
-		//Read in a microstructure in subroutine ppixel, and set up pix[m] with phase label
-		ppixel(nx, ny, nz, ns, nphase, filename); 
-
-		
-		//##############################################################
-		//##############################################################
-		// YZ: added 200511
-		//assign phase modulus
-		/*
-		** (USER)
-		** The parameter phasemod(i,j) is the bulk (i,1) and shear (i,2) value of the i'th phase.
-		** These can be input in terms of Young's moduli E(i,1) and Poisson's ratio nu(i,2).
-		** There is a loop below that changes them to bulk and shear moduli.
-		** For anisotropic elastic material, one can directly input
-		** the elastic moduli tensor cmod in subroutine femat, and skip this part.
-		** If you wish to input in terms of bulk (1) and shear (2), then make sure
-		** to comment out the loop for conversion.
-		*/
-		
-
-		//!!!!!!!!!!!!!!!when poisson's ratio is not constant,use laplace transform!!!!!!!
-		//These data are from 2005 paper: Modeling the linear elastic properties of Portland cement paste
-		//The values are 1-Young's modulus (in GPa) and 2-Poisson's ratio.
-		for (int m = 0; m <=ns; m++) {
-			if (pix[m] == 0) { // void
-				phasemod[m][q][1] = 0.0; //phase 0 is void
-				phasemod[m][q][2] = 0.00;
-
-			}
-			else if (pix[m] == 1) {
-				phasemod[m][q][1] = 0.0001; //phase 1 is water, Origianl 0,0 is wrong, bulk modulus of water should not be zero
-				phasemod[m][q][2] = 0.4999921; //use E~0, v~0.5, and K~2.1GPa
-			}
-			else if (pix[m] == 2) {
-				phasemod[m][q][1] = 117.6; //phase 2 is C3S
-				phasemod[m][q][2] = 0.314;
-			}
-			else if (pix[m] == 3) {
-				phasemod[m][q][1] = 117.6; //phase 3 is C2S
-				phasemod[m][q][2] = 0.314;
-			}
-			else if (pix[m] == 4) {
-				phasemod[m][q][1] = 117.6; //phase 4 is C3A
-				phasemod[m][q][2] = 0.314;
-			}
-			else if (pix[m] == 5) {
-				phasemod[m][q][1] = 117.6; //phase 5 is C4AF
-				phasemod[m][q][2] = 0.314;
-			}
-			else if (pix[m] == 6) {
-				phasemod[m][q][1] = 44.2; //phase 6 is K2SO4
-				phasemod[m][q][2] = 0.269;
-			}
-			else if (pix[m] == 7) {
-				phasemod[m][q][1] = 57.1; //phase 7 is Na2SO4
-				phasemod[m][q][2] = 0.281;
-			}
-			else if (pix[m] == 8) {
-				phasemod[m][q][1] = 45.7; //phase 8 is Gypsum (dihydrate)
-				phasemod[m][q][2] = 0.33;
-			}
-			else if (pix[m] == 9) {
-				phasemod[m][q][1] = 62.85; //phase 9 is Hemihydrate (may not match THAMES: HEMIANH)
-				phasemod[m][q][2] = 0.3025;
-			}
-			else if (pix[m] == 10) {
-				phasemod[m][q][1] = 79.6; //phase 10 is CaCO3
-				phasemod[m][q][2] = 0.31;
-			}
-			else if (pix[m] == 11) {
-				phasemod[m][q][1] = 42.3; //phase 11 is CH
-				phasemod[m][q][2] = 0.324;
-			}
-			else if (pix[m] == 12) {
-				phasemod[m][q][1] = 22.4; //phase 12 is CSH, average properties
-				phasemod[m][q][2] = 0.25;
-			}
-			else if (pix[m] == 13) {
-				phasemod[m][q][1] = 42.3; //phase 13 is AFMC (same as CH)
-				phasemod[m][q][2] = 0.324;
-			}
-			else if (pix[m] == 14) {
-				phasemod[m][q][1] = 42.3; //phase 14 is Monosulfate (same as CH)
-				phasemod[m][q][2] = 0.324;
-			}
-			else if (pix[m] == 15) {
-				phasemod[m][q][1] = 22.4; //phase 15 is Ettringite (same as CSH)
-				phasemod[m][q][2] = 0.25;
-			}
-			else if (pix[m] == 16) {
-				phasemod[m][q][1] = 42.3; //phase 16 is Brucite (Mg(OH)2) where are these values from???
-				phasemod[m][q][2] = 0.324;
-			}
-			else if (pix[m] == 17) {
-				phasemod[m][q][1] = 22.4; //phase 17 is Hydrotalcite where are these values from???
-				phasemod[m][q][2] = 0.25;
-			}
-			else if (pix[m] == 18) {
-				phasemod[m][q][1] = 42.3; //phase 18 is AFM (same as CH)
-				phasemod[m][q][2] = 0.324;
-			}
-			else if (pix[m] == 19) {
-				phasemod[m][q][1] = 117.6; //phase 19 is Lime where are these values from ???
-				phasemod[m][q][2] = 0.314;
-			}
-			else if (pix[m] == 20) {
-				phasemod[m][q][1] = 117.6; //phase 20 is Periclase
-				phasemod[m][q][2] = 0.314;
-			}
-			else if (pix[m] == 21) {
-				phasemod[m][q][1] = 15.0; //phase 21 is Damage
-				phasemod[m][q][2] = 0.4;
-			}
-
-		}
-		
-		//convert (E, v) to (K, G)
-		//if input is Young's modulus and Poisson's ration, use this loop. otherwise input Bulk and Shear skip this one.
-		for (int m = 1; m <= ns; m++)
-		{
-			double save = phasemod[m][q][1];
-			phasemod[m][q][1] = phasemod[m][q][1] / 3. / (1. - 2. * phasemod[m][q][2]); //K=E/3/(1-2v)
-			phasemod[m][q][2] = save / 2. / (1. + phasemod[m][q][2]); //G=E/2/(1+v)
-
-		}
-
-		//##############################################################
-		//##############################################################
-
-
-
-
-		//Count and output the volume fractions of the different phases
-		assig(ns, nphase, prob);
-
-		int counter_csh = 0; //YZ: added to count no. of newly formed CSH
-		//check whether aging occurs
-		for (int k = 1; k <= nz; k++)
-		{
-			for (int j = 1; j <= ny; j++)
-			{
-				for (int i = 1; i <= nx; i++)
-				{
-					int m = nx * ny * (k - 1) + nx * (j - 1) + i;
-					if (q > 1)
-					{
-						if (pix[m] != pixstor[m])
-						{
-							
-							phasechange[m] = 1;//aging will occur, pixel m is different from last image
-							pixt[m] = q - 1; //store the time this pixel changes phase, if pixt[m]=4, pixel m change phase at the 5th image. Each pixel has its formation time 
-							
-							phasechange_fout << "Time step: " << q << ", Phase change occurs at pixel: " << m << " (" << i << ", " << j << ", " << k << ")"
-							<< ", in phase: " << pixstor[m] << ", now is: " << pix[m] << std::endl;
-
-							if (pix[m] == 12) { //if a new CSH voxel is formed, output the location
-								counter_csh = counter_csh + 1;
-								phasechange_csh_fout << "Time step: " << q << ", Phase change occurs at pixel: " << m << " (" << i << ", " << j << ", " << k << ")"
-								<< ", CSH: " << counter_csh
-								<< ", in phase: " << pixstor[m] << ", now is: " << pix[m] << std::endl;
-							}
-						}
-					}
-					pixstor[m] = pix[m]; //initialize at first time step q=1, stores the previous microstructure
-				}
-			}
-		}
-
-
-		//construct the neighbor table, ib(m,n)
-		//first construct labels: delta i, delta j, delta k (MANUAL table 3)
-		in[1] = 0; jn[1] = 1;
-		in[2] = 1; jn[2] = 1;
-		in[3] = 1; jn[3] = 0;
-		in[4] = 1; jn[4] = -1;
-		in[5] = 0; jn[5] = -1;
-		in[6] = -1; jn[6] = -1;
-		in[7] = -1; jn[7] = 0;
-		in[8] = -1; jn[8] = 1;	
-
-		for (int n = 1; n <= 8; n++)
-		{
-			kn[n] = 0; //k1-k8 = 0;
-			kn[n + 8] = -1; //k9-k16 = -1;
-			kn[n + 16] = 1; //k17-k24 = 1
-			in[n + 8] = in[n]; 
-			in[n + 16] = in[n];
-			jn[n + 8] = jn[n];
-			jn[n + 16] = jn[n];
-		}
-
-		//27th is the middle self, 25 is the center below, 26 is the center above
-		in[25] = 0; jn[25] = 0; kn[25] = -1;
-		in[26] = 0; jn[26] = 0; kn[26] = 1;
-		in[27] = 0; jn[27] = 0; kn[27] = 0;
-
-		//Now construct neighbor table ib(m,n) according to 1-d labels
-		//Matrix ib(m,n) gives the 1-d label of the n'th neighbor (n=1-27) of the node labeled m.
-		for (int k = 1; k <= nz; k++)
-		{
-			for (int j = 1; j <= ny; j++)
-			{
-				for (int i = 1; i <= nx; i++)
-				{
-					int m = nx *  ny* (k - 1) + nx * (j - 1) + i;
-					for (int n = 1; n <= 27; n++)
-					{
-						int i1 = i + in[n];
-						int j1 = j + jn[n];
-						int k1 = k + kn[n];
-						//periodic boundary
-						if (i1 < 1) i1 = i1 + nx; 
-						if (i1 > nx) i1 = i1 - nx;
-						if (j1 < 1) j1 = j1 + ny;
-						if (j1 > ny) j1 = j1 - ny;
-						if (k1 < 1) k1 = k1 + nz;
-						if (k1 > nz) k1 = k1 - nz;
-						int m1 = nx * ny * (k1 - 1) + nx * (j1 - 1) + i1;
-						ib[m][n] = m1; //voxel m's n-th neighbor is voxel m1
-					}
-				}
-			}
-		}
-
-		
-		//Compute the average stress and strain in each microstructure.
-		/*
-		** Set up the elastic modulus variables cmod, finite element stiffness matrices dk,
-		** the constant, C, and vector, b, required for computing the energy.
-		** (USER) If anisotropic elastic moduli tensors are used, these need to be
-		** input in subroutine femat.
-		*/
-		
-		femat(nx, ny, nz, ns, phasemod, nphase, q);
-		
-		
-		//Apply a homogeneous macroscopic strain as the initial condition.
-
-		for (int k = 1; k <= nz; k++)
-		{
-			for (int j = 1; j <= ny; j++)
-			{
-				for (int i = 1; i <= nx; i++)
-				{
-					int	m = nx * ny * (k - 1) + nx * (j - 1) + i;
-					double x = 1.0 * (i - 1); //YG: 1.0 is the size of 1 pixel, 1um. x,y,z are coordinates of each node
-					double y = 1.0 * (j - 1);
-					double z = 1.0 * (k - 1);
-					//at boundaries, displacements are 0, this will be corrected in strain()
-					u[m][q][1] = x * exx + y * exy + z * exz; //u is the nodal displacements vector
-					u[m][q][2] = x * exy + y * eyy + z * eyz;
-					u[m][q][3] = x * exz + y * eyz + z * ezz;
-				}
-			}
-		}
-
-
-		//RELAXATION LOOP
-		//(USER) 
-		//kmax is the maximum number of times dembx will be called,
-		//ldemb is the conjugate gradient steps performed during each call. 
-		//The total number of conjugate gradient steps allowed for a given elastic computation is kmax * ldemb.
-		
-		int kmax = 5; //40
-		int	ldemb = 10; //50
-		int	ltot = 0;
-		double utot;
-		int Lstep;
-		
-		//Call energy to get initial energy and initial gradient
-		energy(nx, ny, nz, ns, utot, q);
-
-		double gg = 0.0; //gg is the norm squared of the gradient (gg=gb*gb)
-
-		for (int m3 = 1; m3 <= 3; m3++)
-		{
-			for (int m = 1; m <= ns; m++)
-			{
-				gg = gg + gb[m][m3] * gb[m][m3];
-			}
-		}
-
-		for (int kkk = 1; kkk <= kmax; kkk++)
-		{
-			std::cout << "      kkk loop: " << kkk << std::endl;
-			/*
-			** call dembx to go into the conjugate gradient solver
-			*/
-			dembx(ns, Lstep, gg, dk, gtest, ldemb, kkk, q);
-			ltot = ltot + Lstep;
-			/*
-			** Call energy to compute energy after dembx call. If gg < gtest, this
-			** will be the final energy. If gg is still larger than gtest, then this
-			** will give an intermediate energy with which to check how the
-			** relaxation process is coming along.
-			*/
-			energy(nx, ny, nz, ns, utot, q);
-
-			//If relaxation process is finished, jump out of loop
-			if (gg <= gtest) break;
-			
-			/*
-			** If relaxation process will continue, compute and output stresses
-			** and strains as an additional aid to judge how the
-			** relaxation procedure is progressing.
-			*/
-			
-			stress(nx, ny, nz, ns, q);
-		}
-
-		std::cout << "  Total energy is minimized." << std::endl;
-
-		stress2(nx, ny, nz, ns, q);
-
-		//calculate modulus and possion's ratio using calculated stresses and strains
-		fout << "Stresses: " << strxx << ", " << stryy << ", " << strzz << ", " << strxy << ", " << stryz << ", " << strxz 
-		<< ", Volume fractions of CSH: " << prob[12] << std::endl; 
-
-		// YZ: added 200511
-		cout << "!!!! time step (YZ):" << q << endl;
-		cout << "!!!! size of csh_mod: " << csh_mod.size() << endl;
-		cout << "!!!! first element of csh_mode: " << csh_mod[0].first << ", " << csh_mod[0].second << endl;
-		csh_mod.clear(); // clear for the time step
-
-	}
-
+	construct();
 	return 0;
+	
 }
+
+// int main()
+// {
+// 	std::cout << "0" << std::endl;
+// 	construct();
+// 	std::cout << "1" << std::endl;
+// 	///////////////////////////////////////////////////////////////////////////////
+// 	/*
+// 	** BACKGROUND:
+// 	**
+// 	** This program solves the linear elastic equations in a
+// 	** random linear aging viscoelastic material, subject to an applied macroscopic strain,
+// 	** using the finite element method. Each pixel in the 3-D digital
+// 	** image is a cubic tri-linear finite element, having its own
+// 	** moduli tensor. Periodic boundary conditions are maintained.
+// 	** In the comments below, (USER) means that this is a section of code that
+// 	** the user might have to change for his particular problem. Therefore the
+// 	** user is encouraged to search for this string.
+// 	*/
+// 
+// 	/*
+// 	** PROBLEM AND VARIABLE DEFINITION:
+// 	**
+// 	** The problem being solved is the minimization of the energy
+// 	** 1/2 uAu + b u + C, where A is the Hessian matrix composed of the
+// 	** stiffness matrices (dk) for each pixel/element, b is a constant vector
+// 	** and C is a constant that are determined by the applied strain and
+// 	** the periodic boundary conditions, and u is a vector of all the displacements.
+// 	**
+// 	** The solution method used is the conjugate gradient relaxation algorithm.
+// 	**
+// 	** Other variables are: 
+// 	** gb is the gradient = Au+b, 
+// 	** h and Ah are auxiliary variables used in the conjugate gradient algorithm (in dembx),
+// 	** dk(n,i,j) is the stiffness matrix of the n'th phase, 
+// 	** cmod(n,i,j) is the elastic moduli tensor of the n'th phase,
+// 	** pix is a vector that gives the phase label of each pixel,
+// 	** ib is a matrix that gives the labels of the 27 (counting itself) neighbors of a given node,
+// 	** prob is the volume fractions of the various phases,
+// 	** strxx, stryy, strzz, strxz, stryz, strxy are the six Voigt volume averaged total stresses,
+// 	** sxx, syy, szz, sxz, syz, and sxy are the six Voigt volume averaged total strains.
+// 	*/
+// 
+// 	/*
+// 	** DIMENSIONS:
+// 	**
+// 	** The vectors u,gb,b,h, and Ah are dimensioned to be the system size,
+// 	** ns=nx*ny*nz, with three components, where the digital image of the
+// 	** microstructure considered is a rectangular paralleliped, nx * ny * nz in size.
+// 	** The arrays pix and ib are also dimensioned to the system size.
+// 	** The array ib has 27 components, for the 27 neighbors of a node.
+// 	** Note that the program is set up at present to have at most 100
+// 	** different phases. This can easily be changed, simply by changing
+// 	** the dimensions of dk, prob, and cmod. The parameter nphase gives the
+// 	** number of phases being considered in the problem.
+// 	** All arrays are passed between subroutines using simple common statements.
+// 	*/
+// 
+// 	/*
+// 	** STRONGLY SUGGESTED:  READ THE MANUAL BEFORE USING PROGRAM!!
+// 	*/
+// 
+// 	/*
+// 	** (USER) Change these dimensions and in other subroutines at same time.
+// 	** For example, search and replace all occurrences throughout the
+// 	** program of "(8000" by "(64000", to go from a
+// 	** 20 x 20 x 20 system to a 40 x 40 x 40 system.
+// 	*/
+// 	///////////////////////////////////////////////////////////////////////////////
+// 
+// 	//double phasemod[101][51][3]; //phasemod[phase][time step][bulk/shear single value]
+// 	double phasemod[1000001][51][3]; //phasemod[pixel][time step][bulk/shear single value]
+// 	double prob[101]; //prob[phase], volume fraction of each phase
+// 	int in[28]; //MANUAL table 3: use delta i, delta j, delta k to construct 27 neighbors of 1 element
+// 	int jn[28];
+// 	int kn[28];
+// 
+// 	int nphase = 22;//nphase value should not be zero. otherwise change it in ppixel function
+// 	int step = 3; //step number should be equal to number of Thames microstructure images
+// 		
+// 	//set log time: t = 0.05-56, with number of step values
+// 	/*
+// 	double tmin = 0.05;
+// 	double tmax = 56;
+// 	for (int q = 1; q <= step; q++)
+// 	{
+// 		t[q] = tmin*pow(tmax / tmin, (q*1.0 - 1.) / (step*1.0 - 1.)); //0.5*(q*1.0-1.);
+// 	}
+// 	*/
+// 	
+// 	double t[18]; //time step should be set accordingly to Thames microstructure images
+// 	//t[1]=0.0;
+// 	//t[2]=0.1834;
+// 	//t[3]=0.4004;
+// 	//t[4]=0.6571;
+// 	t[1]=1.1; //t[5]=0.9610;
+// 	t[2]=1.3206; //t[6]
+// 	t[3]=1.7461;
+// 	/*
+// 	t[4]=2.2497;
+// 	t[5]=2.8456;
+// 	t[6]=3.5507;
+// 	t[7]=4.3852;
+// 	t[8]=5.3726;
+// 	t[9]=6.5412;
+// 	t[10]=7.9240;
+// 	t[11]=9.5604;
+// 	t[12]=11.4968;
+// 	t[13]=13.7883;
+// 	t[14]=16.5;
+// 	t[15]=19.7090;
+// 	t[16]=23.5063;
+// 	t[17]=28.0;
+// 	*/
+// 
+// 	//read in file in string
+// 	string prefilename[22]; //file number should be equal to number of Thames microstructure images
+// 	char filename[15];
+// 
+// 	prefilename[1] = "10.img";
+// 	prefilename[2] = "11.img";
+// 	prefilename[3] = "12.img";
+// 	/*
+// 	prefilename[4] = "8.img";
+// 	prefilename[5] = "9.img";
+// 	prefilename[6] = "10.img";
+// 	prefilename[7] = "11.img";
+// 	prefilename[8] = "12.img";
+// 	prefilename[9] = "13.img";
+// 	prefilename[10] = "14.img";
+// 	prefilename[11] = "15.img";
+// 	prefilename[12] = "16.img";
+// 	prefilename[13] = "17.img";
+// 	prefilename[14] = "18.img";
+// 	prefilename[15] = "19.img";
+// 	prefilename[16] = "20.img";
+// 	prefilename[17] = "21.img";
+// 
+// 	prefilename[18] = "18.img";
+// 	prefilename[19] = "19.img";
+// 	prefilename[20] = "20.img";
+// 	prefilename[21] = "21.img";
+// 	
+// 	prefilename[22] = "22.img";
+// 	prefilename[23] = "23.img";
+// 	prefilename[24] = "24.img";
+// 	prefilename[25] = "25.img";
+// 	prefilename[26] = "26.img";
+// 	prefilename[27] = "27.img";
+// 	prefilename[28] = "28.img";
+// 	prefilename[29] = "29.img";
+// 	prefilename[30] = "30.img";
+// 	prefilename[31] = "31.img";
+// 	*/
+// 
+// 	//composite dimension
+// 	int nx = 100;
+// 	int ny = 100;
+// 	int nz = 100;
+// 	int ns = nx * ny * nz; //total number of sites
+// 
+// 	//assign phase initial aging state and aging time	
+// 	for (int k = 1; k <= nz; k++)
+// 	{
+// 		for (int j = 1; j <= ny; j++)
+// 		{
+// 			for (int i = 1; i <= nx; i++)
+// 			{
+// 				int m = nx * ny * (k - 1) + nx * (j - 1) + i;
+// 				phasechange[m] = 0; //initialize aging state, initialize before time loop
+// 				pixt[m] = 0; //initialize aging time
+// 			}
+// 		}
+// 	}
+// 
+// 	// Initialize phasemod before time loop starts
+// 	for (int j = 1; j <= step; j++)
+// 		{
+// 			for (int i = 1; i <= ns; i++)
+// 			{
+// 				phasemod[i][j][1] = 0.;
+// 				phasemod[i][j][2] = 0.;
+// 			}
+// 		}
+// 
+// 	//set controlled strain, for shear, 2 should be divided
+// 	/*
+// 	** (USER) Set applied strains
+// 	** Actual shear strain applied in loop is exy, exz, and eyz as given in the statements below.
+// 	** The engineering shear strain, by which the shear modulus is usually defined, is twice of these values.
+// 	*/
+// 	exx = 0.1; // Is it tensile strain???
+// 	eyy = 0.1;
+// 	ezz = 0.1;
+// 	exz = 0.0;
+// 	eyz = 0.0;
+// 	exy = 0.0;
+// 
+//     std::cout << "2" << std::endl;
+// 	
+// 	/* !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
+// 	/* !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! TIME LOOP Starts !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
+// 	/* !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
+// 
+// 	for (int q = 1; q <= step; q++)
+// 	{
+// 		std::cout << '\n';
+// 		std::cout << "Time step: " << q << std::endl;
+// 
+// 		//read in microstructure file starting from 1.txt
+// 		strcpy(filename, prefilename[q].c_str());
+// 		ifstream fin(filename);
+// 
+// 		/*
+// 		** (USER) gtest is the stopping criterion, 
+// 		** gb is the gradient of the energy,
+// 		** gg = gb * gb is the norm squared of the gradient,
+// 		** gtest = (small number) * ns, 
+// 		** so that when gg < gtest, 
+// 		** the RMS (root mean square) value per pixel of gb is less than sqrt(small number).
+// 		** i.e. gb/sqrt(ns) < (small number)
+// 		*/
+// 		double gtest = pow(10.0, -8) * ns; //modified: 10^(-12)
+// 
+// 		//assign each phase and output volume fraction
+// 		//Read in a microstructure in subroutine ppixel, and set up pix[m] with phase label
+// 		ppixel(nx, ny, nz, ns, nphase, filename); 
+// 
+// 		
+// 		//##############################################################
+// 		//##############################################################
+// 		// YZ: added 200511
+// 		//assign phase modulus
+// 		/*
+// 		** (USER)
+// 		** The parameter phasemod(i,j) is the bulk (i,1) and shear (i,2) value of the i'th phase.
+// 		** These can be input in terms of Young's moduli E(i,1) and Poisson's ratio nu(i,2).
+// 		** There is a loop below that changes them to bulk and shear moduli.
+// 		** For anisotropic elastic material, one can directly input
+// 		** the elastic moduli tensor cmod in subroutine femat, and skip this part.
+// 		** If you wish to input in terms of bulk (1) and shear (2), then make sure
+// 		** to comment out the loop for conversion.
+// 		*/
+// 		
+// 
+// 		//!!!!!!!!!!!!!!!when poisson's ratio is not constant,use laplace transform!!!!!!!
+// 		//These data are from 2005 paper: Modeling the linear elastic properties of Portland cement paste
+// 		//The values are 1-Young's modulus (in GPa) and 2-Poisson's ratio.
+// 		for (int m = 0; m <=ns; m++) {
+// 			if (pix[m] == 0) { // void
+// 				phasemod[m][q][1] = 0.0; //phase 0 is void
+// 				phasemod[m][q][2] = 0.00;
+// 
+// 			}
+// 			else if (pix[m] == 1) {
+// 				phasemod[m][q][1] = 0.0001; //phase 1 is water, Origianl 0,0 is wrong, bulk modulus of water should not be zero
+// 				phasemod[m][q][2] = 0.4999921; //use E~0, v~0.5, and K~2.1GPa
+// 			}
+// 			else if (pix[m] == 2) {
+// 				phasemod[m][q][1] = 117.6; //phase 2 is C3S
+// 				phasemod[m][q][2] = 0.314;
+// 			}
+// 			else if (pix[m] == 3) {
+// 				phasemod[m][q][1] = 117.6; //phase 3 is C2S
+// 				phasemod[m][q][2] = 0.314;
+// 			}
+// 			else if (pix[m] == 4) {
+// 				phasemod[m][q][1] = 117.6; //phase 4 is C3A
+// 				phasemod[m][q][2] = 0.314;
+// 			}
+// 			else if (pix[m] == 5) {
+// 				phasemod[m][q][1] = 117.6; //phase 5 is C4AF
+// 				phasemod[m][q][2] = 0.314;
+// 			}
+// 			else if (pix[m] == 6) {
+// 				phasemod[m][q][1] = 44.2; //phase 6 is K2SO4
+// 				phasemod[m][q][2] = 0.269;
+// 			}
+// 			else if (pix[m] == 7) {
+// 				phasemod[m][q][1] = 57.1; //phase 7 is Na2SO4
+// 				phasemod[m][q][2] = 0.281;
+// 			}
+// 			else if (pix[m] == 8) {
+// 				phasemod[m][q][1] = 45.7; //phase 8 is Gypsum (dihydrate)
+// 				phasemod[m][q][2] = 0.33;
+// 			}
+// 			else if (pix[m] == 9) {
+// 				phasemod[m][q][1] = 62.85; //phase 9 is Hemihydrate (may not match THAMES: HEMIANH)
+// 				phasemod[m][q][2] = 0.3025;
+// 			}
+// 			else if (pix[m] == 10) {
+// 				phasemod[m][q][1] = 79.6; //phase 10 is CaCO3
+// 				phasemod[m][q][2] = 0.31;
+// 			}
+// 			else if (pix[m] == 11) {
+// 				phasemod[m][q][1] = 42.3; //phase 11 is CH
+// 				phasemod[m][q][2] = 0.324;
+// 			}
+// 			else if (pix[m] == 12) {
+// 				phasemod[m][q][1] = 22.4; //phase 12 is CSH, average properties
+// 				phasemod[m][q][2] = 0.25;
+// 			}
+// 			else if (pix[m] == 13) {
+// 				phasemod[m][q][1] = 42.3; //phase 13 is AFMC (same as CH)
+// 				phasemod[m][q][2] = 0.324;
+// 			}
+// 			else if (pix[m] == 14) {
+// 				phasemod[m][q][1] = 42.3; //phase 14 is Monosulfate (same as CH)
+// 				phasemod[m][q][2] = 0.324;
+// 			}
+// 			else if (pix[m] == 15) {
+// 				phasemod[m][q][1] = 22.4; //phase 15 is Ettringite (same as CSH)
+// 				phasemod[m][q][2] = 0.25;
+// 			}
+// 			else if (pix[m] == 16) {
+// 				phasemod[m][q][1] = 42.3; //phase 16 is Brucite (Mg(OH)2) where are these values from???
+// 				phasemod[m][q][2] = 0.324;
+// 			}
+// 			else if (pix[m] == 17) {
+// 				phasemod[m][q][1] = 22.4; //phase 17 is Hydrotalcite where are these values from???
+// 				phasemod[m][q][2] = 0.25;
+// 			}
+// 			else if (pix[m] == 18) {
+// 				phasemod[m][q][1] = 42.3; //phase 18 is AFM (same as CH)
+// 				phasemod[m][q][2] = 0.324;
+// 			}
+// 			else if (pix[m] == 19) {
+// 				phasemod[m][q][1] = 117.6; //phase 19 is Lime where are these values from ???
+// 				phasemod[m][q][2] = 0.314;
+// 			}
+// 			else if (pix[m] == 20) {
+// 				phasemod[m][q][1] = 117.6; //phase 20 is Periclase
+// 				phasemod[m][q][2] = 0.314;
+// 			}
+// 			else if (pix[m] == 21) {
+// 				phasemod[m][q][1] = 15.0; //phase 21 is Damage
+// 				phasemod[m][q][2] = 0.4;
+// 			}
+// 
+// 		}
+// 		
+// 		//convert (E, v) to (K, G)
+// 		//if input is Young's modulus and Poisson's ration, use this loop. otherwise input Bulk and Shear skip this one.
+// 		for (int m = 1; m <= ns; m++)
+// 		{
+// 			double save = phasemod[m][q][1];
+// 			phasemod[m][q][1] = phasemod[m][q][1] / 3. / (1. - 2. * phasemod[m][q][2]); //K=E/3/(1-2v)
+// 			phasemod[m][q][2] = save / 2. / (1. + phasemod[m][q][2]); //G=E/2/(1+v)
+// 
+// 		}
+// 
+// 		//##############################################################
+// 		//##############################################################
+// 
+// 
+// 
+// 
+// 		//Count and output the volume fractions of the different phases
+// 		assig(ns, nphase, prob);
+// 
+// 		int counter_csh = 0; //YZ: added to count no. of newly formed CSH
+// 		//check whether aging occurs
+// 		for (int k = 1; k <= nz; k++)
+// 		{
+// 			for (int j = 1; j <= ny; j++)
+// 			{
+// 				for (int i = 1; i <= nx; i++)
+// 				{
+// 					int m = nx * ny * (k - 1) + nx * (j - 1) + i;
+// 					if (q > 1)
+// 					{
+// 						if (pix[m] != pixstor[m])
+// 						{
+// 							
+// 							phasechange[m] = 1;//aging will occur, pixel m is different from last image
+// 							pixt[m] = q - 1; //store the time this pixel changes phase, if pixt[m]=4, pixel m change phase at the 5th image. Each pixel has its formation time 
+// 							
+// 							phasechange_fout << "Time step: " << q << ", Phase change occurs at pixel: " << m << " (" << i << ", " << j << ", " << k << ")"
+// 							<< ", in phase: " << pixstor[m] << ", now is: " << pix[m] << std::endl;
+// 
+// 							if (pix[m] == 12) { //if a new CSH voxel is formed, output the location
+// 								counter_csh = counter_csh + 1;
+// 								phasechange_csh_fout << "Time step: " << q << ", Phase change occurs at pixel: " << m << " (" << i << ", " << j << ", " << k << ")"
+// 								<< ", CSH: " << counter_csh
+// 								<< ", in phase: " << pixstor[m] << ", now is: " << pix[m] << std::endl;
+// 							}
+// 						}
+// 					}
+// 					pixstor[m] = pix[m]; //initialize at first time step q=1, stores the previous microstructure
+// 				}
+// 			}
+// 		}
+// 
+// 
+// 		//construct the neighbor table, ib(m,n)
+// 		//first construct labels: delta i, delta j, delta k (MANUAL table 3)
+// 		in[1] = 0; jn[1] = 1;
+// 		in[2] = 1; jn[2] = 1;
+// 		in[3] = 1; jn[3] = 0;
+// 		in[4] = 1; jn[4] = -1;
+// 		in[5] = 0; jn[5] = -1;
+// 		in[6] = -1; jn[6] = -1;
+// 		in[7] = -1; jn[7] = 0;
+// 		in[8] = -1; jn[8] = 1;	
+// 
+// 		for (int n = 1; n <= 8; n++)
+// 		{
+// 			kn[n] = 0; //k1-k8 = 0;
+// 			kn[n + 8] = -1; //k9-k16 = -1;
+// 			kn[n + 16] = 1; //k17-k24 = 1
+// 			in[n + 8] = in[n]; 
+// 			in[n + 16] = in[n];
+// 			jn[n + 8] = jn[n];
+// 			jn[n + 16] = jn[n];
+// 		}
+// 
+// 		//27th is the middle self, 25 is the center below, 26 is the center above
+// 		in[25] = 0; jn[25] = 0; kn[25] = -1;
+// 		in[26] = 0; jn[26] = 0; kn[26] = 1;
+// 		in[27] = 0; jn[27] = 0; kn[27] = 0;
+// 
+// 		//Now construct neighbor table ib(m,n) according to 1-d labels
+// 		//Matrix ib(m,n) gives the 1-d label of the n'th neighbor (n=1-27) of the node labeled m.
+// 		for (int k = 1; k <= nz; k++)
+// 		{
+// 			for (int j = 1; j <= ny; j++)
+// 			{
+// 				for (int i = 1; i <= nx; i++)
+// 				{
+// 					int m = nx *  ny* (k - 1) + nx * (j - 1) + i;
+// 					for (int n = 1; n <= 27; n++)
+// 					{
+// 						int i1 = i + in[n];
+// 						int j1 = j + jn[n];
+// 						int k1 = k + kn[n];
+// 						//periodic boundary
+// 						if (i1 < 1) i1 = i1 + nx; 
+// 						if (i1 > nx) i1 = i1 - nx;
+// 						if (j1 < 1) j1 = j1 + ny;
+// 						if (j1 > ny) j1 = j1 - ny;
+// 						if (k1 < 1) k1 = k1 + nz;
+// 						if (k1 > nz) k1 = k1 - nz;
+// 						int m1 = nx * ny * (k1 - 1) + nx * (j1 - 1) + i1;
+// 						ib[m][n] = m1; //voxel m's n-th neighbor is voxel m1
+// 					}
+// 				}
+// 			}
+// 		}
+// 
+// 		
+// 		//Compute the average stress and strain in each microstructure.
+// 		/*
+// 		** Set up the elastic modulus variables cmod, finite element stiffness matrices dk,
+// 		** the constant, C, and vector, b, required for computing the energy.
+// 		** (USER) If anisotropic elastic moduli tensors are used, these need to be
+// 		** input in subroutine femat.
+// 		*/
+// 		
+// 		femat(nx, ny, nz, ns, phasemod, nphase, q);
+// 		
+// 		
+// 		//Apply a homogeneous macroscopic strain as the initial condition.
+// 
+// 		for (int k = 1; k <= nz; k++)
+// 		{
+// 			for (int j = 1; j <= ny; j++)
+// 			{
+// 				for (int i = 1; i <= nx; i++)
+// 				{
+// 					int	m = nx * ny * (k - 1) + nx * (j - 1) + i;
+// 					double x = 1.0 * (i - 1); //YG: 1.0 is the size of 1 pixel, 1um. x,y,z are coordinates of each node
+// 					double y = 1.0 * (j - 1);
+// 					double z = 1.0 * (k - 1);
+// 					//at boundaries, displacements are 0, this will be corrected in strain()
+// 					u[m][q][1] = x * exx + y * exy + z * exz; //u is the nodal displacements vector
+// 					u[m][q][2] = x * exy + y * eyy + z * eyz;
+// 					u[m][q][3] = x * exz + y * eyz + z * ezz;
+// 				}
+// 			}
+// 		}
+// 
+// 
+// 		//RELAXATION LOOP
+// 		//(USER) 
+// 		//kmax is the maximum number of times dembx will be called,
+// 		//ldemb is the conjugate gradient steps performed during each call. 
+// 		//The total number of conjugate gradient steps allowed for a given elastic computation is kmax * ldemb.
+// 		
+// 		int kmax = 5; //40
+// 		int	ldemb = 10; //50
+// 		int	ltot = 0;
+// 		double utot;
+// 		int Lstep;
+// 		
+// 		//Call energy to get initial energy and initial gradient
+// 		energy(nx, ny, nz, ns, utot, q);
+// 
+// 		double gg = 0.0; //gg is the norm squared of the gradient (gg=gb*gb)
+// 
+// 		for (int m3 = 1; m3 <= 3; m3++)
+// 		{
+// 			for (int m = 1; m <= ns; m++)
+// 			{
+// 				gg = gg + gb[m][m3] * gb[m][m3];
+// 			}
+// 		}
+// 
+// 		for (int kkk = 1; kkk <= kmax; kkk++)
+// 		{
+// 			std::cout << "      kkk loop: " << kkk << std::endl;
+// 			/*
+// 			** call dembx to go into the conjugate gradient solver
+// 			*/
+// 			dembx(ns, Lstep, gg, dk, gtest, ldemb, kkk, q);
+// 			ltot = ltot + Lstep;
+// 			/*
+// 			** Call energy to compute energy after dembx call. If gg < gtest, this
+// 			** will be the final energy. If gg is still larger than gtest, then this
+// 			** will give an intermediate energy with which to check how the
+// 			** relaxation process is coming along.
+// 			*/
+// 			energy(nx, ny, nz, ns, utot, q);
+// 
+// 			//If relaxation process is finished, jump out of loop
+// 			if (gg <= gtest) break;
+// 			
+// 			/*
+// 			** If relaxation process will continue, compute and output stresses
+// 			** and strains as an additional aid to judge how the
+// 			** relaxation procedure is progressing.
+// 			*/
+// 			
+// 			stress(nx, ny, nz, ns, q);
+// 		}
+// 
+// 		std::cout << "  Total energy is minimized." << std::endl;
+// 
+// 		stress2(nx, ny, nz, ns, q);
+// 
+// 		//calculate modulus and possion's ratio using calculated stresses and strains
+// 		fout << "Stresses: " << strxx << ", " << stryy << ", " << strzz << ", " << strxy << ", " << stryz << ", " << strxz 
+// 		<< ", Volume fractions of CSH: " << prob[12] << std::endl; 
+// 
+// 		// YZ: added 200511
+// 		cout << "!!!! time step (YZ):" << q << endl;
+// 		cout << "!!!! size of csh_mod: " << csh_mod.size() << endl;
+// 		cout << "!!!! first element of csh_mode: " << csh_mod[0].first << ", " << csh_mod[0].second << endl;
+// 		csh_mod.clear(); // clear for the time step
+// 
+// 	}
+// 
+// 	destruct();
+// 	return 0;
+// }
 
